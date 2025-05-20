@@ -8,4 +8,5 @@ try {
   await $`yarn prebuildify --strip --napi --arch x64`;
 } catch (err) {
   console.error('Build failed:', err);
+  throw err;
 }
