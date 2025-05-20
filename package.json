@@ -1,0 +1,28 @@
+{
+  "name": "@filemap/winicon",
+  "version": "1.0.0",
+  "description": "Package to get windows thumbnails",
+  "main": "index.js",
+  "author": "FileMap",
+  "license": "MIT",
+  "dependencies": {
+    "node-addon-api": "^8.3.1",
+    "node-gyp-build": "^4.8.4"
+  },
+  "devDependencies": {
+    "node-gyp": "^11.2.0",
+    "prebuildify": "^6.0.1",
+    "zx": "^8.5.4"
+  },
+  "scripts": {
+    "install": "echo",
+    "build": "zx scripts/build.mjs",
+    "test": "node test.js"
+  },
+  "types": "index.d.ts",
+  "gypfile": true,
+  "os": [
+    "win32"
+  ],
+  "packageManager": "yarn@1.22.22"
+}
