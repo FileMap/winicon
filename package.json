@@ -21,8 +21,5 @@
   },
   "types": "index.d.ts",
   "gypfile": true,
-  "os": [
-    "win32"
-  ],
   "packageManager": "yarn@1.22.22"
 }
