@@ -7,6 +7,7 @@
 #include <shlwapi.h>
 #include <gdiplus.h>
 #include <thumbcache.h>
+#include <memory>
 
 #pragma comment(lib, "Ole32.lib")
 #pragma comment(lib, "Shlwapi.lib")
@@ -65,26 +66,27 @@ HRESULT GetThumbnailImage(const std::wstring& filePath, int size, HBITMAP& hBitm
 void SaveBitmapAsPNG(HBITMAP hBitmap, const std::wstring& outputPath) {
     GdiplusStartupInput gdiplusStartupInput;
     ULONG_PTR gdiplusToken;
-    GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, nullptr);
+    if (GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, nullptr) != Ok) return;
 
     BITMAP bm;
-    GetObject(hBitmap, sizeof(BITMAP), &bm);
+    if (!GetObject(hBitmap, sizeof(BITMAP), &bm)) return;
 
     Bitmap bitmap(bm.bmWidth, bm.bmHeight, PixelFormat32bppARGB);
-
-    Gdiplus::BitmapData bmpData;
+    BitmapData bmpData;
     Rect rect(0, 0, bm.bmWidth, bm.bmHeight);
 
     if (bitmap.LockBits(&rect, ImageLockModeWrite, PixelFormat32bppARGB, &bmpData) == Ok) {
-        int bytesPerPixel = 4;
-        BYTE* srcData = (BYTE*)bm.bmBits;
-        BYTE* destData = (BYTE*)bmpData.Scan0;
+        BITMAPINFO bmi = {};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = bm.bmWidth;
+        bmi.bmiHeader.biHeight = -bm.bmHeight;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
 
-        for (int y = 0; y < bm.bmHeight; y++) {
-            BYTE* srcRow = srcData + (bm.bmHeight - 1 - y) * bm.bmWidth * bytesPerPixel;
-            BYTE* destRow = destData + y * bmpData.Stride;
-            memcpy(destRow, srcRow, bm.bmWidth * bytesPerPixel);
-        }
+        HDC hdc = GetDC(nullptr);
+        GetDIBits(hdc, hBitmap, 0, bm.bmHeight, bmpData.Scan0, &bmi, DIB_RGB_COLORS);
+        ReleaseDC(nullptr, hdc);
 
         bitmap.UnlockBits(&bmpData);
     }
@@ -109,9 +111,16 @@ void getImage(const Napi::CallbackInfo& info, bool useThumbnail) {
 
     GdiplusStartupInput gdiplusStartupInput;
     ULONG_PTR gdiplusToken;
-    GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, nullptr);
+    if (GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, nullptr) != Ok) {
+        Napi::Error::New(env, "Failed to initialize GDI+").ThrowAsJavaScriptException();
+        return;
+    }
 
-    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) {
+        GdiplusShutdown(gdiplusToken);
+        Napi::Error::New(env, "Failed to initialize COM").ThrowAsJavaScriptException();
+        return;
+    }
 
     HBITMAP hBitmap = nullptr;
     HRESULT hr = useThumbnail
@@ -122,7 +131,7 @@ void getImage(const Napi::CallbackInfo& info, bool useThumbnail) {
         SaveBitmapAsPNG(hBitmap, outputPath);
         DeleteObject(hBitmap);
     } else {
-        Napi::Error::New(env, "Failed to retrieve image.").ThrowAsJavaScriptException();
+        Napi::Error::New(env, "Failed to retrieve image").ThrowAsJavaScriptException();
     }
 
     CoUninitialize();
