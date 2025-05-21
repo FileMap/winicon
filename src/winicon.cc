@@ -72,16 +72,19 @@ void SaveBitmapAsPNG(HBITMAP hBitmap, const std::wstring& outputPath) {
 
     Bitmap bitmap(bm.bmWidth, bm.bmHeight, PixelFormat32bppARGB);
 
-    BitmapData bmpData;
+    Gdiplus::BitmapData bmpData;
     Rect rect(0, 0, bm.bmWidth, bm.bmHeight);
 
     if (bitmap.LockBits(&rect, ImageLockModeWrite, PixelFormat32bppARGB, &bmpData) == Ok) {
         int bytesPerPixel = 4;
-        BYTE* destData = static_cast<BYTE*>(bmpData.Scan0);
+        BYTE* srcData = (BYTE*)bm.bmBits;
+        BYTE* destData = (BYTE*)bmpData.Scan0;
 
-        HDC hdc = GetDC(nullptr);
-        GetDIBits(hdc, hBitmap, 0, bm.bmHeight, destData, (BITMAPINFO*)&bm, DIB_RGB_COLORS);
-        ReleaseDC(nullptr, hdc);
+        for (int y = 0; y < bm.bmHeight; y++) {
+            BYTE* srcRow = srcData + (bm.bmHeight - 1 - y) * bm.bmWidth * bytesPerPixel;
+            BYTE* destRow = destData + y * bmpData.Stride;
+            memcpy(destRow, srcRow, bm.bmWidth * bytesPerPixel);
+        }
 
         bitmap.UnlockBits(&bmpData);
     }
