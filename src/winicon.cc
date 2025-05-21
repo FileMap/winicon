@@ -35,7 +35,7 @@ HRESULT GetIconImage(const std::wstring& filePath, int size, HBITMAP& hBitmap) {
     }
 
     SIZE sizeStruct = { size, size };
-    hr = pImageFactory->GetImage(sizeStruct, SIIGBF_BIGGERSIZEOK | SIIGBF_ICONONLY, &hBitmap);
+    hr = pImageFactory->GetImage(sizeStruct, SIIGBF_BIGGERSIZEOK | SIIGBF_ICONONLY | SIIGBF_RESIZETOFIT, &hBitmap);
 
     pImageFactory->Release();
     pShellItem->Release();
@@ -63,13 +63,34 @@ HRESULT GetThumbnailImage(const std::wstring& filePath, int size, HBITMAP& hBitm
 }
 
 void SaveBitmapAsPNG(HBITMAP hBitmap, const std::wstring& outputPath) {
-    Bitmap* bmp = Bitmap::FromHBITMAP(hBitmap, nullptr);
-    if (!bmp) return;
+    GdiplusStartupInput gdiplusStartupInput;
+    ULONG_PTR gdiplusToken;
+    GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, nullptr);
+
+    BITMAP bm;
+    GetObject(hBitmap, sizeof(BITMAP), &bm);
+
+    Bitmap bitmap(bm.bmWidth, bm.bmHeight, PixelFormat32bppARGB);
+
+    BitmapData bmpData;
+    Rect rect(0, 0, bm.bmWidth, bm.bmHeight);
+
+    if (bitmap.LockBits(&rect, ImageLockModeWrite, PixelFormat32bppARGB, &bmpData) == Ok) {
+        int bytesPerPixel = 4;
+        BYTE* destData = static_cast<BYTE*>(bmpData.Scan0);
+
+        HDC hdc = GetDC(nullptr);
+        GetDIBits(hdc, hBitmap, 0, bm.bmHeight, destData, (BITMAPINFO*)&bm, DIB_RGB_COLORS);
+        ReleaseDC(nullptr, hdc);
+
+        bitmap.UnlockBits(&bmpData);
+    }
 
     CLSID clsidPng;
     CLSIDFromString(L"{557CF406-1A04-11D3-9A73-0000F81EF32E}", &clsidPng);
-    bmp->Save(outputPath.c_str(), &clsidPng, nullptr);
-    delete bmp;
+    bitmap.Save(outputPath.c_str(), &clsidPng, nullptr);
+
+    GdiplusShutdown(gdiplusToken);
 }
 
 void getImage(const Napi::CallbackInfo& info, bool useThumbnail) {
