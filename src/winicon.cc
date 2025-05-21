@@ -7,11 +7,6 @@
 #include <shlwapi.h>
 #include <gdiplus.h>
 #include <thumbcache.h>
-#include <memory>
-#include <exception>
-#include <fstream>
-#include <algorithm>
-#include <iostream>
 
 #pragma comment(lib, "Ole32.lib")
 #pragma comment(lib, "Shlwapi.lib")
@@ -67,98 +62,92 @@ HRESULT GetThumbnailImage(const std::wstring& filePath, int size, HBITMAP& hBitm
     return hr;
 }
 
-Napi::Value getImageBuffer(const Napi::CallbackInfo& info, bool useThumbnail) {
+void SaveBitmapAsPNG(HBITMAP hBitmap, const std::wstring& outputPath) {
+    GdiplusStartupInput gdiplusStartupInput;
+    ULONG_PTR gdiplusToken;
+    if (GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, nullptr) != Ok) return;
+
+    BITMAP bm;
+    if (GetObject(hBitmap, sizeof(BITMAP), &bm) && bm.bmBits) {
+        Bitmap bitmap(bm.bmWidth, bm.bmHeight, PixelFormat32bppARGB);
+
+        Gdiplus::BitmapData bmpData;
+        Rect rect(0, 0, bm.bmWidth, bm.bmHeight);
+
+        if (bitmap.LockBits(&rect, ImageLockModeWrite, PixelFormat32bppARGB, &bmpData) == Ok) {
+            int bytesPerPixel = 4;
+            BYTE* srcData = (BYTE*)bm.bmBits;
+            BYTE* destData = (BYTE*)bmpData.Scan0;
+
+            for (int y = 0; y < bm.bmHeight; y++) {
+                BYTE* srcRow = srcData + (bm.bmHeight - 1 - y) * bm.bmWidth * bytesPerPixel;
+                BYTE* destRow = destData + y * bmpData.Stride;
+                memcpy(destRow, srcRow, bm.bmWidth * bytesPerPixel);
+            }
+
+            bitmap.UnlockBits(&bmpData);
+        }
+
+        CLSID clsidPng;
+        CLSIDFromString(L"{557CF406-1A04-11D3-9A73-0000F81EF32E}", &clsidPng);
+        bitmap.Save(outputPath.c_str(), &clsidPng, nullptr);
+    }
+
+    GdiplusShutdown(gdiplusToken);
+}
+
+void getImage(const Napi::CallbackInfo& info, bool useThumbnail) {
     Napi::Env env = info.Env();
-    if (info.Length() < 2 || !info[0].IsString() || !info[1].IsNumber()) {
-        Napi::TypeError::New(env, "Expected (inputPath: string, size: number)").ThrowAsJavaScriptException();
-        return env.Null();
+    if (info.Length() != 3 || !info[0].IsString() || !info[1].IsString() || !info[2].IsNumber()) {
+        Napi::TypeError::New(env, "Expected (inputPath: string, outputPath: string, size: number)").ThrowAsJavaScriptException();
+        return;
     }
 
-    std::wstring inputPath = std::wstring(info[0].As<Napi::String>().Utf8Value().begin(), info[0].As<Napi::String>().Utf8Value().end());
-    int size = info[1].As<Napi::Number>().Int32Value();
+    std::u16string inputUtf16 = info[0].As<Napi::String>().Utf16Value();
+    std::u16string outputUtf16 = info[1].As<Napi::String>().Utf16Value();
+    std::wstring inputPath(inputUtf16.begin(), inputUtf16.end());
+    std::wstring outputPath(outputUtf16.begin(), outputUtf16.end());
+    int size = info[2].As<Napi::Number>().Int32Value();
 
-    if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) {
-        Napi::Error::New(env, "Failed to initialize COM").ThrowAsJavaScriptException();
-        return env.Null();
+    GdiplusStartupInput gdiplusStartupInput;
+    ULONG_PTR gdiplusToken;
+    if (GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, nullptr) != Ok) {
+        Napi::Error::New(env, "Failed to initialize GDI+").ThrowAsJavaScriptException();
+        return;
     }
+
+    HRESULT coHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    bool comInitialized = SUCCEEDED(coHr);
 
     HBITMAP hBitmap = nullptr;
-    Napi::Value result = env.Null();
-    try {
-        HRESULT hr = useThumbnail
-            ? GetThumbnailImage(inputPath, size, hBitmap)
-            : GetIconImage(inputPath, size, hBitmap);
+    HRESULT hr = useThumbnail
+        ? GetThumbnailImage(inputPath, size, hBitmap)
+        : GetIconImage(inputPath, size, hBitmap);
 
-        if (SUCCEEDED(hr) && hBitmap) {
-            BITMAP bmp;
-            if (GetObject(hBitmap, sizeof(BITMAP), &bmp) && bmp.bmWidth > 0 && bmp.bmHeight > 0) {
-                std::wcerr << L"Bitmap: " << bmp.bmWidth << L"x" << bmp.bmHeight << std::endl;
-
-                int width = bmp.bmWidth;
-                int height = bmp.bmHeight;
-                int bmpSize = width * 4 * height;
-
-                BITMAPINFO bmi = {};
-                bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-                bmi.bmiHeader.biWidth = width;
-                bmi.bmiHeader.biHeight = -height; // top-down
-                bmi.bmiHeader.biPlanes = 1;
-                bmi.bmiHeader.biBitCount = 32;
-                bmi.bmiHeader.biCompression = BI_RGB;
-
-                BYTE* bits = nullptr;
-                HDC hdc = GetDC(nullptr);
-                HBITMAP hDib = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, reinterpret_cast<void**>(&bits), nullptr, 0);
-                HDC hMemDC = CreateCompatibleDC(hdc);
-                ReleaseDC(nullptr, hdc);
-
-                if (hMemDC && hDib && bits) {
-                    HGDIOBJ old = SelectObject(hMemDC, hDib);
-                    HDC hSrcDC = CreateCompatibleDC(nullptr);
-                    if (hSrcDC) {
-                        SelectObject(hSrcDC, hBitmap);
-                        BitBlt(hMemDC, 0, 0, width, height, hSrcDC, 0, 0, SRCCOPY);
-                        DeleteDC(hSrcDC);
-
-                        result = Napi::Buffer<BYTE>::Copy(env, bits, bmpSize);
-                    } else {
-                        Napi::Error::New(env, "Failed to create source DC").ThrowAsJavaScriptException();
-                    }
-                    SelectObject(hMemDC, old);
-                    DeleteDC(hMemDC);
-                    DeleteObject(hDib);
-                } else {
-                    Napi::Error::New(env, "Failed to create DIB section").ThrowAsJavaScriptException();
-                }
-            } else {
-                std::wcerr << L"Invalid bitmap dimensions." << std::endl;
-                Napi::Error::New(env, "Invalid bitmap").ThrowAsJavaScriptException();
-            }
-            DeleteObject(hBitmap);
-        } else {
-            std::wcerr << L"Failed to get icon/thumbnail. HRESULT=" << hr << std::endl;
-            Napi::Error::New(env, "Failed to retrieve image").ThrowAsJavaScriptException();
-        }
-    } catch (...) {
-        if (hBitmap) DeleteObject(hBitmap);
-        Napi::Error::New(env, "Native exception in image processing").ThrowAsJavaScriptException();
+    if (SUCCEEDED(hr) && hBitmap) {
+        SaveBitmapAsPNG(hBitmap, outputPath);
+        DeleteObject(hBitmap);
+    } else {
+        Napi::Error::New(env, "Failed to retrieve image.").ThrowAsJavaScriptException();
     }
 
-    CoUninitialize();
-    return result;
+    if (comInitialized) CoUninitialize();
+    GdiplusShutdown(gdiplusToken);
 }
 
-Napi::Value getIconBuffer(const Napi::CallbackInfo& info) {
-    return getImageBuffer(info, false);
+Napi::Value getIcon(const Napi::CallbackInfo& info) {
+    getImage(info, false);
+    return info.Env().Undefined();
 }
 
-Napi::Value getThumbnailBuffer(const Napi::CallbackInfo& info) {
-    return getImageBuffer(info, true);
+Napi::Value getThumbnail(const Napi::CallbackInfo& info) {
+    getImage(info, true);
+    return info.Env().Undefined();
 }
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
-    exports.Set("getIconBuffer", Napi::Function::New(env, getIconBuffer));
-    exports.Set("getThumbnailBuffer", Napi::Function::New(env, getThumbnailBuffer));
+    exports.Set("getIcon", Napi::Function::New(env, getIcon));
+    exports.Set("getThumbnail", Napi::Function::New(env, getThumbnail));
     return exports;
 }
 
@@ -172,8 +161,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
         Napi::TypeError::New(env, "winicon only works on Windows.").ThrowAsJavaScriptException();
     });
 
-    exports.Set("getIconBuffer", stub);
-    exports.Set("getThumbnailBuffer", stub);
+    exports.Set("getIcon", stub);
+    exports.Set("getThumbnail", stub);
     return exports;
 }
 
