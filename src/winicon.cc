@@ -94,30 +94,41 @@ Napi::Value getImageBuffer(const Napi::CallbackInfo& info, bool useThumbnail) {
             if (GetObject(hBitmap, sizeof(BITMAP), &bmp) && bmp.bmWidth > 0 && bmp.bmHeight > 0) {
                 std::wcerr << L"Bitmap: " << bmp.bmWidth << L"x" << bmp.bmHeight << std::endl;
 
+                int width = bmp.bmWidth;
+                int height = bmp.bmHeight;
+                int bmpSize = width * 4 * height;
+
                 BITMAPINFO bmi = {};
                 bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-                bmi.bmiHeader.biWidth = bmp.bmWidth;
-                bmi.bmiHeader.biHeight = -bmp.bmHeight;
+                bmi.bmiHeader.biWidth = width;
+                bmi.bmiHeader.biHeight = -height; // top-down
                 bmi.bmiHeader.biPlanes = 1;
                 bmi.bmiHeader.biBitCount = 32;
                 bmi.bmiHeader.biCompression = BI_RGB;
 
-                int bmpSize = bmp.bmWidth * 4 * bmp.bmHeight;
-                std::unique_ptr<BYTE[]> pixels(new BYTE[bmpSize]);
+                BYTE* bits = nullptr;
+                HDC hdc = GetDC(nullptr);
+                HBITMAP hDib = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, reinterpret_cast<void**>(&bits), nullptr, 0);
+                HDC hMemDC = CreateCompatibleDC(hdc);
+                ReleaseDC(nullptr, hdc);
 
-                HDC hMemDC = CreateCompatibleDC(nullptr);
-                if (hMemDC) {
-                    int lines = GetDIBits(hMemDC, hBitmap, 0, bmp.bmHeight, pixels.get(), &bmi, DIB_RGB_COLORS);
-                    if (lines > 0) {
-                        std::wcerr << L"GetDIBits returned " << lines << L" scanlines." << std::endl;
-                        result = Napi::Buffer<BYTE>::Copy(env, pixels.get(), bmpSize);
+                if (hMemDC && hDib && bits) {
+                    HGDIOBJ old = SelectObject(hMemDC, hDib);
+                    HDC hSrcDC = CreateCompatibleDC(nullptr);
+                    if (hSrcDC) {
+                        SelectObject(hSrcDC, hBitmap);
+                        BitBlt(hMemDC, 0, 0, width, height, hSrcDC, 0, 0, SRCCOPY);
+                        DeleteDC(hSrcDC);
+
+                        result = Napi::Buffer<BYTE>::Copy(env, bits, bmpSize);
                     } else {
-                        std::wcerr << L"GetDIBits failed or returned zero lines." << std::endl;
-                        Napi::Error::New(env, "GetDIBits failed").ThrowAsJavaScriptException();
+                        Napi::Error::New(env, "Failed to create source DC").ThrowAsJavaScriptException();
                     }
+                    SelectObject(hMemDC, old);
                     DeleteDC(hMemDC);
+                    DeleteObject(hDib);
                 } else {
-                    Napi::Error::New(env, "CreateCompatibleDC failed").ThrowAsJavaScriptException();
+                    Napi::Error::New(env, "Failed to create DIB section").ThrowAsJavaScriptException();
                 }
             } else {
                 std::wcerr << L"Invalid bitmap dimensions." << std::endl;
