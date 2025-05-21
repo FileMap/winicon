@@ -1,3 +1,4 @@
+// src/addon.cpp
 #include <napi.h>
 
 #ifdef _WIN32
@@ -10,6 +11,7 @@
 #include <exception>
 #include <fstream>
 #include <algorithm>
+#include <iostream>
 
 #pragma comment(lib, "Ole32.lib")
 #pragma comment(lib, "Shlwapi.lib")
@@ -89,7 +91,9 @@ Napi::Value getImageBuffer(const Napi::CallbackInfo& info, bool useThumbnail) {
 
         if (SUCCEEDED(hr) && hBitmap) {
             BITMAP bmp;
-            if (GetObject(hBitmap, sizeof(BITMAP), &bmp)) {
+            if (GetObject(hBitmap, sizeof(BITMAP), &bmp) && bmp.bmWidth > 0 && bmp.bmHeight > 0) {
+                std::wcerr << L"Bitmap: " << bmp.bmWidth << L"x" << bmp.bmHeight << std::endl;
+
                 BITMAPINFO bmi = {};
                 bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
                 bmi.bmiHeader.biWidth = bmp.bmWidth;
@@ -102,13 +106,26 @@ Napi::Value getImageBuffer(const Napi::CallbackInfo& info, bool useThumbnail) {
                 std::unique_ptr<BYTE[]> pixels(new BYTE[bmpSize]);
 
                 HDC hMemDC = CreateCompatibleDC(nullptr);
-                if (hMemDC && GetDIBits(hMemDC, hBitmap, 0, bmp.bmHeight, pixels.get(), &bmi, DIB_RGB_COLORS)) {
-                    result = Napi::Buffer<BYTE>::Copy(env, pixels.get(), bmpSize);
+                if (hMemDC) {
+                    int lines = GetDIBits(hMemDC, hBitmap, 0, bmp.bmHeight, pixels.get(), &bmi, DIB_RGB_COLORS);
+                    if (lines > 0) {
+                        std::wcerr << L"GetDIBits returned " << lines << L" scanlines." << std::endl;
+                        result = Napi::Buffer<BYTE>::Copy(env, pixels.get(), bmpSize);
+                    } else {
+                        std::wcerr << L"GetDIBits failed or returned zero lines." << std::endl;
+                        Napi::Error::New(env, "GetDIBits failed").ThrowAsJavaScriptException();
+                    }
+                    DeleteDC(hMemDC);
+                } else {
+                    Napi::Error::New(env, "CreateCompatibleDC failed").ThrowAsJavaScriptException();
                 }
-                if (hMemDC) DeleteDC(hMemDC);
+            } else {
+                std::wcerr << L"Invalid bitmap dimensions." << std::endl;
+                Napi::Error::New(env, "Invalid bitmap").ThrowAsJavaScriptException();
             }
             DeleteObject(hBitmap);
         } else {
+            std::wcerr << L"Failed to get icon/thumbnail. HRESULT=" << hr << std::endl;
             Napi::Error::New(env, "Failed to retrieve image").ThrowAsJavaScriptException();
         }
     } catch (...) {
