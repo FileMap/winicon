@@ -1,4 +1,3 @@
-// src/addon.cpp
 #include <napi.h>
 
 #ifdef _WIN32
@@ -8,7 +7,9 @@
 #include <gdiplus.h>
 #include <thumbcache.h>
 #include <memory>
+#include <exception>
 #include <fstream>
+#include <algorithm>
 
 #pragma comment(lib, "Ole32.lib")
 #pragma comment(lib, "Shlwapi.lib")
@@ -19,7 +20,7 @@ using namespace Gdiplus;
 
 #ifndef BHID_ThumbnailHandler
 extern "C" const GUID BHID_ThumbnailHandler = {
-    0x7b2e650a, 0x8e20, 0x4f4a,
+    0x72b2e650a, 0x8e20, 0x4f4a,
     { 0xb0, 0x9e, 0x65, 0x97, 0xaf, 0xde, 0x3c, 0x94 }
 };
 #endif
@@ -64,113 +65,47 @@ HRESULT GetThumbnailImage(const std::wstring& filePath, int size, HBITMAP& hBitm
     return hr;
 }
 
-void SaveBitmapAsPNG(HBITMAP hBitmap, const std::wstring& outputPath) {
-    GdiplusStartupInput gdiplusStartupInput;
-    ULONG_PTR gdiplusToken;
-    if (GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, nullptr) != Ok) return;
-
-    BITMAP bm;
-    if (!GetObject(hBitmap, sizeof(BITMAP), &bm)) return;
-
-    Bitmap bitmap(bm.bmWidth, bm.bmHeight, PixelFormat32bppARGB);
-    BitmapData bmpData;
-    Rect rect(0, 0, bm.bmWidth, bm.bmHeight);
-
-    if (bitmap.LockBits(&rect, ImageLockModeWrite, PixelFormat32bppARGB, &bmpData) == Ok) {
-        BITMAPINFO bmi = {};
-        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bmi.bmiHeader.biWidth = bm.bmWidth;
-        bmi.bmiHeader.biHeight = -bm.bmHeight;
-        bmi.bmiHeader.biPlanes = 1;
-        bmi.bmiHeader.biBitCount = 32;
-        bmi.bmiHeader.biCompression = BI_RGB;
-
-        HDC hdc = GetDC(nullptr);
-        GetDIBits(hdc, hBitmap, 0, bm.bmHeight, bmpData.Scan0, &bmi, DIB_RGB_COLORS);
-        ReleaseDC(nullptr, hdc);
-
-        bitmap.UnlockBits(&bmpData);
-    }
-
-    CLSID clsidPng;
-    CLSIDFromString(L"{557CF406-1A04-11D3-9A73-0000F81EF32E}", &clsidPng);
-    bitmap.Save(outputPath.c_str(), &clsidPng, nullptr);
-
-    GdiplusShutdown(gdiplusToken);
-}
-
-void SaveBitmapAsBMP(HBITMAP hBitmap, const std::wstring& outputPath) {
-    BITMAP bmp;
-    if (!GetObject(hBitmap, sizeof(BITMAP), &bmp)) return;
-
-    BITMAPFILEHEADER bmfHeader = {};
-    BITMAPINFOHEADER bi = {};
-
-    bi.biSize = sizeof(BITMAPINFOHEADER);
-    bi.biWidth = bmp.bmWidth;
-    bi.biHeight = bmp.bmHeight;
-    bi.biPlanes = 1;
-    bi.biBitCount = 32;
-    bi.biCompression = BI_RGB;
-
-    int bmpSize = ((bmp.bmWidth * bi.biBitCount + 31) / 32) * 4 * bmp.bmHeight;
-
-    std::unique_ptr<BYTE[]> pixels(new BYTE[bmpSize]);
-
-    HDC hdc = GetDC(nullptr);
-    if (!GetDIBits(hdc, hBitmap, 0, bmp.bmHeight, pixels.get(), (BITMAPINFO*)&bi, DIB_RGB_COLORS)) {
-        ReleaseDC(nullptr, hdc);
-        return;
-    }
-    ReleaseDC(nullptr, hdc);
-
-    bmfHeader.bfType = 0x4D42;
-    bmfHeader.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
-    bmfHeader.bfSize = bmfHeader.bfOffBits + bmpSize;
-
-    std::ofstream file(outputPath, std::ios::out | std::ios::binary);
-    if (!file) return;
-    file.write(reinterpret_cast<const char*>(&bmfHeader), sizeof(bmfHeader));
-    file.write(reinterpret_cast<const char*>(&bi), sizeof(bi));
-    file.write(reinterpret_cast<const char*>(pixels.get()), bmpSize);
-    file.close();
-}
-
-bool ShouldSaveAsPng(const std::wstring& outputPath) {
-    std::wstring ext = outputPath.substr(outputPath.find_last_of(L".") + 1);
-    std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
-    return (ext == L"png");
-}
-
-void getImage(const Napi::CallbackInfo& info, bool useThumbnail) {
+Napi::Value getImageBuffer(const Napi::CallbackInfo& info, bool useThumbnail) {
     Napi::Env env = info.Env();
-    if (info.Length() < 3 || !info[0].IsString() || !info[1].IsString() || !info[2].IsNumber()) {
-        Napi::TypeError::New(env, "Expected (inputPath: string, outputPath: string, size: number)").ThrowAsJavaScriptException();
-        return;
+    if (info.Length() < 2 || !info[0].IsString() || !info[1].IsNumber()) {
+        Napi::TypeError::New(env, "Expected (inputPath: string, size: number)").ThrowAsJavaScriptException();
+        return env.Null();
     }
 
     std::wstring inputPath = std::wstring(info[0].As<Napi::String>().Utf8Value().begin(), info[0].As<Napi::String>().Utf8Value().end());
-    std::wstring outputPath = std::wstring(info[1].As<Napi::String>().Utf8Value().begin(), info[1].As<Napi::String>().Utf8Value().end());
-    int size = info[2].As<Napi::Number>().Int32Value();
-
-    bool saveAsPng = ShouldSaveAsPng(outputPath);
+    int size = info[1].As<Napi::Number>().Int32Value();
 
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) {
         Napi::Error::New(env, "Failed to initialize COM").ThrowAsJavaScriptException();
-        return;
+        return env.Null();
     }
 
     HBITMAP hBitmap = nullptr;
+    Napi::Value result = env.Null();
     try {
         HRESULT hr = useThumbnail
             ? GetThumbnailImage(inputPath, size, hBitmap)
             : GetIconImage(inputPath, size, hBitmap);
 
         if (SUCCEEDED(hr) && hBitmap) {
-            if (saveAsPng) {
-                SaveBitmapAsPNG(hBitmap, outputPath);
-            } else {
-                SaveBitmapAsBMP(hBitmap, outputPath);
+            BITMAP bmp;
+            if (GetObject(hBitmap, sizeof(BITMAP), &bmp)) {
+                BITMAPINFO bmi = {};
+                bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+                bmi.bmiHeader.biWidth = bmp.bmWidth;
+                bmi.bmiHeader.biHeight = -bmp.bmHeight;
+                bmi.bmiHeader.biPlanes = 1;
+                bmi.bmiHeader.biBitCount = 32;
+                bmi.bmiHeader.biCompression = BI_RGB;
+
+                int bmpSize = bmp.bmWidth * 4 * bmp.bmHeight;
+                std::unique_ptr<BYTE[]> pixels(new BYTE[bmpSize]);
+
+                HDC hMemDC = CreateCompatibleDC(nullptr);
+                if (hMemDC && GetDIBits(hMemDC, hBitmap, 0, bmp.bmHeight, pixels.get(), &bmi, DIB_RGB_COLORS)) {
+                    result = Napi::Buffer<BYTE>::Copy(env, pixels.get(), bmpSize);
+                }
+                if (hMemDC) DeleteDC(hMemDC);
             }
             DeleteObject(hBitmap);
         } else {
@@ -182,21 +117,20 @@ void getImage(const Napi::CallbackInfo& info, bool useThumbnail) {
     }
 
     CoUninitialize();
+    return result;
 }
 
-Napi::Value getIcon(const Napi::CallbackInfo& info) {
-    getImage(info, false);
-    return info.Env().Undefined();
+Napi::Value getIconBuffer(const Napi::CallbackInfo& info) {
+    return getImageBuffer(info, false);
 }
 
-Napi::Value getThumbnail(const Napi::CallbackInfo& info) {
-    getImage(info, true);
-    return info.Env().Undefined();
+Napi::Value getThumbnailBuffer(const Napi::CallbackInfo& info) {
+    return getImageBuffer(info, true);
 }
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
-    exports.Set("getIcon", Napi::Function::New(env, getIcon));
-    exports.Set("getThumbnail", Napi::Function::New(env, getThumbnail));
+    exports.Set("getIconBuffer", Napi::Function::New(env, getIconBuffer));
+    exports.Set("getThumbnailBuffer", Napi::Function::New(env, getThumbnailBuffer));
     return exports;
 }
 
@@ -210,8 +144,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
         Napi::TypeError::New(env, "winicon only works on Windows.").ThrowAsJavaScriptException();
     });
 
-    exports.Set("getIcon", stub);
-    exports.Set("getThumbnail", stub);
+    exports.Set("getIconBuffer", stub);
+    exports.Set("getThumbnailBuffer", stub);
     return exports;
 }
 
